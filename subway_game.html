@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>나도 이제 지하철 마스터!</title>
+    <style>
+        body {
+            background-color: #1e1e1e;
+            color: #d4d4d4;
+            font-family: 'Malgun Gothic', '맑은 고딕', sans-serif;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+        #game-container {
+            width: 100%;
+            max-width: 600px;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            background-color: #252526;
+            box-shadow: 0 0 20px rgba(0,0,0,0.5);
+        }
+        #header {
+            background-color: #007acc;
+            color: white;
+            padding: 15px;
+            text-align: center;
+            font-size: 1.2em;
+            font-weight: bold;
+        }
+        #log {
+            flex-grow: 1;
+            padding: 20px;
+            overflow-y: auto;
+            font-size: 0.95em;
+            line-height: 1.6;
+        }
+        .log-entry { margin-bottom: 10px; }
+        .system-msg { color: #569cd6; }
+        .alert-msg { color: #ce9178; }
+        .action-msg { color: #4ec9b0; }
+        .status-msg { color: #c586c0; font-weight: bold; }
+        hr { border: 0; border-top: 1px dashed #555; margin: 15px 0; }
+        
+        #controls {
+            background-color: #333333;
+            padding: 15px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            border-top: 2px solid #007acc;
+        }
+        button {
+            background-color: #0e639c;
+            color: white;
+            border: none;
+            padding: 12px;
+            font-size: 1em;
+            cursor: pointer;
+            border-radius: 5px;
+            text-align: left;
+            transition: background-color 0.2s;
+        }
+        button:hover {
+            background-color: #1177bb;
+        }
+        button:disabled {
+            background-color: #555;
+            cursor: not-allowed;
+        }
+    </style>
+</head>
+<body>
+
+<div id="game-container">
+    <div id="header">🚇 나도 이제 지하철 마스터 V0.1</div>
+    <div id="log"></div>
+    <div id="controls" style="display: none;"></div>
+</div>
+
+<script>
+    // 1. 제공된 철도 데이터 축약 버전 (웹용으로 필요한 데이터만 파싱)
+    // (너무 길어지는 것을 방지하기 위해 원본 데이터를 문자열로 넣습니다)
+    const RAW_STATION_DATA = `권역,권역명,철도운영기관명,노선명,순번,역명
+01,수도권,공항,공항,1,서울역
+01,수도권,공항,공항,2,공덕
+01,수도권,공항,공항,3,홍대입구
+01,수도권,공항,공항,4,디지털미디어시티
+01,수도권,공항,공항,5,마곡나루
+01,수도권,공항,공항,6,김포공항
+01,수도권,공항,공항,7,계양
+01,수도권,공항,공항,8,검암
+01,수도권,공항,공항,9,청라국제도시
+01,수도권,서울교통공사,1호선,36,시청
+01,수도권,서울교통공사,1호선,37,서울역
+01,수도권,서울교통공사,1호선,38,남영
+01,수도권,서울교통공사,1호선,39,용산
+01,수도권,서울교통공사,1호선,40,노량진
+01,수도권,서울교통공사,1호선,41,대방
+01,수도권,서울교통공사,1호선,42,신길
+01,수도권,서울교통공사,1호선,43,영등포
+01,수도권,서울교통공사,1호선,44,신도림
+01,수도권,서울교통공사,1호선,45,구로
+01,수도권,서울교통공사,1호선,56,부평
+01,수도권,서울교통공사,2호선,1,시청
+01,수도권,서울교통공사,2호선,2,충정로
+01,수도권,서울교통공사,2호선,3,아현
+01,수도권,서울교통공사,2호선,4,이대
+01,수도권,서울교통공사,2호선,5,신촌
+01,수도권,서울교통공사,2호선,6,홍대입구
+01,수도권,서울교통공사,2호선,7,합정
+01,수도권,서울교통공사,2호선,8,당산
+01,수도권,서울교통공사,2호선,9,영등포구청
+01,수도권,서울교통공사,2호선,10,문래
+01,수도권,서울교통공사,2호선,11,신도림
+01,수도권,서울교통공사,5호선,16,신길
+01,수도권,서울교통공사,5호선,17,여의도
+01,수도권,서울교통공사,5호선,18,여의나루
+01,수도권,서울교통공사,5호선,19,마포
+01,수도권,서울교통공사,5호선,20,공덕`; 
+    // 실제 배포 시 위 문자열 안에 Python 파일에 있던 전체 1000줄짜리 데이터를 그대로 복사/붙여넣기 하시면 됩니다!
+
+    let subwayLines = {};
+    let transferInfo = {};
+    let decisionStations = [];
+    
+    // 상태 변수
+    let currentLine = "";
+    let currentStation = "";
+    let destination = "";
+    let currentDirection = 0;
+    let accumulatedTime = 0;
+    let accumulatedStations = 0;
+
+    // 커스텀 방향 데이터
+    const CUSTOM_DIRECTIONS = {
+        "1호선(본선)": {up: "구로/인천/신창 방면", down: "청량리/의정부/소요산 방면"},
+        "1호선(경인선)": {up: "부평/인천 방면", down: "구로/소요산 방면"},
+        "1호선(경부선)": {up: "수원/신창 방면", down: "구로/소요산 방면"},
+        "2호선(순환)": {up: "외선순환(신촌/시청 방면)", down: "내선순환(강남/시청 방면)"},
+        "5호선(본선)": {up: "강동/마천/하남 방면", down: "여의도/방화 방면"},
+        "공항": {up: "마곡나루/인천공항 방면", down: "공덕/서울역 방면"}
+    };
+
+    // UI 요소
+    const logContainer = document.getElementById('log');
+    const controlsContainer = document.getElementById('controls');
+
+    function printLog(message, className = "") {
+        const div = document.createElement('div');
+        div.className = `log-entry ${className}`;
+        div.innerHTML = message;
+        logContainer.appendChild(div);
+        logContainer.scrollTop = logContainer.scrollHeight;
+    }
+
+    function sleep(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    function getRealFare(stations) {
+        let distance = stations * 1.2;
+        let fare = 1400;
+        if (distance > 50) fare += 800 + Math.floor((distance - 50.001) / 8 + 1) * 100;
+        else if (distance > 10) fare += Math.floor((distance - 10.001) / 5 + 1) * 100;
+        return fare;
+    }
+
+    function getTravelTime(line, st1, st2) {
+        const pair = `${st1},${st2}`;
+        const specialTimes = {
+            "수서,동탄": 15, "동탄,수서": 15,
+            "청계산입구,판교": 8, "판교,청계산입구": 8
+        };
+        if (specialTimes[pair]) return specialTimes[pair];
+        if (line.includes("GTX")) return 7;
+        if (["신분당", "경강", "경춘", "경의중앙", "공항", "수인분당"].includes(line)) return 3;
+        return 2;
+    }
+
+    function parseData() {
+        let linesMap = {};
+        const rows = RAW_STATION_DATA.trim().split('\n');
+        for (let i = 1; i < rows.length; i++) {
+            const parts = rows[i].split(',');
+            if (parts.length >= 6 && parts[1] === "수도권") {
+                const lineName = parts[3];
+                const seq = parseInt(parts[4]);
+                let stationName = parts[5].split('(')[0].trim();
+                
+                if (stationName === "신촌" && lineName === "경의중앙") stationName = "신촌(경의중앙)";
+                if (stationName === "양평" && lineName === "경의중앙") stationName = "양평(경의중앙)";
+                
+                if (!linesMap[lineName]) linesMap[lineName] = [];
+                linesMap[lineName].push({seq, name: stationName});
+            }
+        }
+
+        for (let line in linesMap) {
+            linesMap[line].sort((a, b) => a.seq - b.seq);
+            subwayLines[line] = [...new Set(linesMap[line].map(x => x.name))];
+        }
+
+        // 수동 지선 분리 (파이썬과 동일하게 적용)
+        const line1Base = ["시청", "서울역", "남영", "용산", "노량진", "대방", "신길", "영등포", "신도림", "구로"];
+        subwayLines["1호선(본선)"] = line1Base;
+        subwayLines["1호선(경인선)"] = ["구로", "부평"];
+        subwayLines["2호선(순환)"] = ["시청", "충정로", "아현", "이대", "신촌", "홍대입구", "합정", "당산", "영등포구청", "문래", "신도림"];
+        subwayLines["5호선(본선)"] = ["신길", "여의도", "여의나루", "마포", "공덕"];
+        
+        delete subwayLines["1호선"];
+        delete subwayLines["2호선"];
+        delete subwayLines["5호선"];
+
+        // 환승역 생성
+        for (let line in subwayLines) {
+            subwayLines[line].forEach(st => {
+                if (!transferInfo[st]) transferInfo[st] = [];
+                transferInfo[st].push(line);
+            });
+        }
+        for (let st in transferInfo) {
+            if (transferInfo[st].length > 1) decisionStations.push(st);
+            else delete transferInfo[st]; // 환승이 아닌 역은 삭제
+        }
+    }
+
+    // 사용자 입력을 기다리는 Promise (버튼 클릭 기반)
+    function waitForUserChoice(options) {
+        return new Promise(resolve => {
+            controlsContainer.innerHTML = "";
+            controlsContainer.style.display = "flex";
+            
+            options.forEach((opt, index) => {
+                const btn = document.createElement("button");
+                btn.innerText = `${index + 1}. ${opt.text}`;
+                btn.onclick = () => {
+                    controlsContainer.style.display = "none";
+                    resolve(opt);
+                };
+                controlsContainer.appendChild(btn);
+            });
+        });
+    }
+
+    async function gameLoop() {
+        while (currentStation !== destination) {
+            if (decisionStations.includes(currentStation) || currentDirection === 0) {
+                // 선택 지점
+                printLog(`<hr>`);
+                printLog(`📍 현재 위치: <b>[${currentLine}] ${currentStation}역</b> (⚠️ 선택 지점)`, "status-msg");
+                printLog(`⏱️ 누적 시간: ${accumulatedTime}분 | 💵 예상 요금: ${getRealFare(accumulatedStations)}원`, "status-msg");
+                printLog(`어디로 가시겠습니까? (버튼을 클릭하세요)`, "system-msg");
+
+                let currentLineOptions = [];
+                let transferOptions = [];
+
+                // 현재 역의 교차 노선 정보 가져오기 (없으면 현재 노선 하나만 배열로 만듦)
+                let linesAtStation = transferInfo[currentStation] || [currentLine];
+
+                linesAtStation.forEach(line => {
+                    let isTransfer = (line.split('(')[0] !== currentLine.split('(')[0]);
+                    let prefix = "";
+                    
+                    if (line === currentLine) {
+                        prefix = currentDirection === 0 ? `➡️ [열차 탑승] ${line}` : `➡️ [현재 열차 유지] ${line}`;
+                    } else {
+                        prefix = isTransfer ? `🔄 [환승] ${line}` : `🔀 [다른 방면] ${line}`;
+                    }
+                    
+                    let stationList = subwayLines[line];
+                    let idx = stationList.indexOf(currentStation);
+                    
+                    let upDir = CUSTOM_DIRECTIONS[line] ? CUSTOM_DIRECTIONS[line].up : `${stationList[stationList.length - 1]} 방면`;
+                    let downDir = CUSTOM_DIRECTIONS[line] ? CUSTOM_DIRECTIONS[line].down : `${stationList[0]} 방면`;
+
+                    if (idx < stationList.length - 1) {
+                        let nextSt = stationList[idx + 1];
+                        let travelTime = getTravelTime(line, currentStation, nextSt);
+                        let timeCost = isTransfer ? (4 + travelTime) : travelTime;
+                        let opt = { text: `${prefix} ${upDir} (다음역: ${nextSt})`, line, nextSt, timeCost, direction: 1 };
+                        
+                        if (line === currentLine) {
+                            if (currentDirection === 1 || currentDirection === 0) currentLineOptions.push(opt);
+                        } else {
+                            transferOptions.push(opt);
+                        }
+                    }
+
+                    if (idx > 0) {
+                        let prevSt = stationList[idx - 1];
+                        let travelTime = getTravelTime(line, currentStation, prevSt);
+                        let timeCost = isTransfer ? (4 + travelTime) : travelTime;
+                        let opt = { text: `${prefix} ${downDir} (다음역: ${prevSt})`, line, nextSt: prevSt, timeCost, direction: -1 };
+                        
+                        if (line === currentLine) {
+                            if (currentDirection === -1 || currentDirection === 0) currentLineOptions.push(opt);
+                        } else {
+                            transferOptions.push(opt);
+                        }
+                    }
+                });
+
+                const allOptions = [...currentLineOptions, ...transferOptions];
+                const choice = await waitForUserChoice(allOptions);
+                
+                currentLine = choice.line;
+                currentStation = choice.nextSt;
+                accumulatedTime += choice.timeCost;
+                accumulatedStations += 1;
+                currentDirection = choice.direction;
+
+                printLog(`<br><i>덜컹덜컹... ${currentStation}역으로 이동 중...</i>`, "action-msg");
+                await sleep(600); 
+
+            } else {
+                // 자동 이동 지점
+                printLog(`<hr>`);
+                printLog(`📍 현재 위치: <b>[${currentLine}] ${currentStation}역</b>`);
+                printLog(`⏱️ 누적 시간: ${accumulatedTime}분 | 💵 예상 요금: ${getRealFare(accumulatedStations)}원`);
+
+                let stationList = subwayLines[currentLine];
+                let idx = stationList.indexOf(currentStation);
+                let nextStation = stationList[idx + currentDirection];
+                
+                if (!nextStation) {
+                    printLog(`❌ 종착역입니다. 더 이상 이동할 수 없습니다.`, "alert-msg");
+                    return;
+                }
+
+                let travelTime = getTravelTime(currentLine, currentStation, nextStation);
+                
+                printLog(`일반 역이므로, 목적지 방면인 ${nextStation}역으로 자동 이동합니다.`, "system-msg");
+                printLog(`<br><i>덜컹덜컹... ${nextStation}역으로 이동 중... (소요 시간: ${travelTime}분)</i>`, "action-msg");
+                
+                await sleep(800);
+
+                currentStation = nextStation;
+                accumulatedTime += travelTime;
+                accumulatedStations += 1;
+            }
+        }
+        
+        // 목적지 도착
+        printLog(`<hr>`);
+        printLog(`🎉 <b>축하합니다! 목적지 [${destination}역]에 도착했습니다!</b>`, "status-msg");
+        printLog(`⏱️ 최종 소요 시간: ${accumulatedTime}분`, "action-msg");
+        printLog(`💵 최종 지출 비용: ${getRealFare(accumulatedStations)}원`, "action-msg");
+        printLog(`고생하셨습니다! 당신은 이제 지하철 마스터입니다. 😎`);
+        
+        // 재시작 버튼
+        controlsContainer.innerHTML = "";
+        controlsContainer.style.display = "flex";
+        const restartBtn = document.createElement("button");
+        restartBtn.innerText = "🔄 다시 플레이하기";
+        restartBtn.onclick = () => location.reload();
+        controlsContainer.appendChild(restartBtn);
+    }
+
+    async function initGame() {
+        parseData();
+        
+        // 모든 역 배열화
+        let allPairs = [];
+        let allUniqueStations = new Set();
+        for (let line in subwayLines) {
+            subwayLines[line].forEach(st => {
+                allPairs.push({line, st});
+                allUniqueStations.add(st);
+            });
+        }
+        
+        let uniqueArray = Array.from(allUniqueStations);
+        let startPair = allPairs[Math.floor(Math.random() * allPairs.length)];
+        
+        currentLine = startPair.line;
+        currentStation = startPair.st;
+        
+        destination = uniqueArray[Math.floor(Math.random() * uniqueArray.length)];
+        while (destination === currentStation) {
+            destination = uniqueArray[Math.floor(Math.random() * uniqueArray.length)];
+        }
+
+        printLog(`<b>미션: [${currentLine}] ${currentStation}역에서 출발하여 ${destination}역까지 가세요!</b>`, "status-msg");
+        printLog(`💡 TIP: 이정표의 버튼을 클릭하여 올바른 방면으로 환승하세요.<br>`);
+        
+        // 잠시 대기 후 게임 시작
+        await sleep(1000);
+        gameLoop();
+    }
+
+    // 스크립트 로드 시 게임 시작
+    window.onload = initGame;
+
+</script>
+</body>
+</html>
